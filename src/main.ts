@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { setupApp } from './setup-app';
@@ -7,6 +8,7 @@ import { setupApp } from './setup-app';
 const logger = new Logger('Bootstrap');
 
 async function bootstrap(): Promise<void> {
+  await ConfigModule.envVariablesLoaded;
   const port = Number(process.env.PORT ?? 3000);
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) {

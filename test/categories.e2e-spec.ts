@@ -4,28 +4,64 @@ import { Test } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
 import request from 'supertest';
+import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { MAX_CATEGORY_TOTAL } from '../src/categories/categories.constants';
 import type { CategoryResponseDto } from '../src/categories/dto/category-response.dto';
+import { Category } from '../src/categories/entities/category.entity';
+import { createDatabaseOptions } from '../src/database/database.options';
 import { setupApp } from '../src/setup-app';
 
 describe('Categories API', () => {
   let app: INestApplication;
   let server: Server;
+  let database: DataSource;
 
-  beforeEach(async () => {
+  async function createApplication(): Promise<INestApplication> {
     const module = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
-    app = module.createNestApplication();
-    setupApp(app);
-    await app.init();
+    const application = module.createNestApplication();
+    setupApp(application);
+    await application.init();
+    return application;
+  }
+
+  beforeAll(async () => {
+    database = new DataSource(createDatabaseOptions());
+    await database.initialize();
+
+    // Verify the actual database before any migration or destructive test setup.
+    const [connection] = await database.query<{ database: string }[]>(
+      'SELECT current_database() AS "database"',
+    );
+    const expectedDatabase = decodeURIComponent(
+      new URL(process.env.TEST_DATABASE_URL!).pathname.slice(1),
+    );
+    expect(connection.database).toBe(expectedDatabase);
+    expect(connection.database).toMatch(/_test$/);
+
+    // Tests explicitly apply migrations; application startup never does.
+    await database.runMigrations();
+  });
+
+  beforeEach(async () => {
+    await database.getRepository(Category).clear();
+    app = await createApplication();
     server = app.getHttpServer() as Server;
   });
 
   afterEach(async () => {
-    await app.close();
+    if (app) {
+      await app.close();
+    }
+  });
+
+  afterAll(async () => {
+    if (database?.isInitialized) {
+      await database.destroy();
+    }
   });
 
   async function createCategory(name = 'Food'): Promise<CategoryResponseDto> {
@@ -100,6 +136,112 @@ describe('Categories API', () => {
       .expect(409);
     await request(server).get('/categories').expect(200, [category]);
   });
+
+  it('persists categories and totals after recreating the application', async () => {
+    const category = await createCategory();
+    await request(server)
+      .post(`/categories/${category.id}/amounts`)
+      .send({ amount: 12.5 })
+      .expect(200);
+
+    await app.close();
+    app = await createApplication();
+    server = app.getHttpServer() as Server;
+
+    await request(server)
+      .get('/categories')
+      .expect(200, [{ ...category, totalAmount: 12.5 }]);
+  });
+
+  it('accumulates concurrent requests across application instances without lost updates', async () => {
+    const category = await createCategory();
+    const secondApp = await createApplication();
+
+    try {
+      const secondServer = secondApp.getHttpServer() as Server;
+      await Promise.all(
+        Array.from({ length: 20 }, (_, index) =>
+          request(index % 2 === 0 ? server : secondServer)
+            .post(`/categories/${category.id}/amounts`)
+            .send({ amount: 0.01 })
+            .expect(200),
+        ),
+      );
+      await request(secondServer)
+        .get('/categories')
+        .expect(200, [{ ...category, totalAmount: 0.2 }]);
+    } finally {
+      await secondApp.close();
+    }
+  });
+
+  it('enforces the total limit during concurrent additions', async () => {
+    const category = await createCategory();
+    await request(server)
+      .post(`/categories/${category.id}/amounts`)
+      .send({ amount: MAX_CATEGORY_TOTAL - 0.01 })
+      .expect(200);
+
+    const responses = await Promise.all(
+      Array.from({ length: 2 }, () =>
+        request(server)
+          .post(`/categories/${category.id}/amounts`)
+          .send({ amount: 0.01 }),
+      ),
+    );
+
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      200, 400,
+    ]);
+    await request(server)
+      .get('/categories')
+      .expect(200, [{ ...category, totalAmount: MAX_CATEGORY_TOTAL }]);
+  });
+
+  it('enforces case-insensitive uniqueness during concurrent category creation', async () => {
+    const responses = await Promise.all(
+      ['Food', 'fOoD'].map((name) =>
+        request(server).post('/categories').send({ name }),
+      ),
+    );
+
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      201, 409,
+    ]);
+    const response = await request(server).get('/categories').expect(200);
+    expect(response.body).toHaveLength(1);
+  });
+
+  it.each(['-0.01', '1000000000.01'])(
+    'enforces the database total constraint for %s',
+    async (total) => {
+      await expect(
+        database.query(
+          'INSERT INTO "categories" ("name", "total_amount") VALUES ($1, $2)',
+          ['Invalid total', total],
+        ),
+      ).rejects.toMatchObject({
+        driverError: {
+          code: '23514',
+          constraint: 'chk_categories_total_amount_range',
+        },
+      });
+    },
+  );
+
+  it.each(['', '   ', ' Food '])(
+    'enforces the database name constraint for "%s"',
+    async (name) => {
+      await expect(
+        database.query('INSERT INTO "categories" ("name") VALUES ($1)', [name]),
+      ).rejects.toMatchObject({
+        driverError: {
+          code: '23514',
+          constraint: 'chk_categories_name_trimmed',
+        },
+      });
+    },
+  );
 
   it.each([
     ['missing', {}],

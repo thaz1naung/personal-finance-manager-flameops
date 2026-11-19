@@ -13,8 +13,8 @@ export function setupApp(app: INestApplication): void {
   const config = new DocumentBuilder()
     .setTitle('Personal Finance Manager API')
     .setDescription(
-      'Stage 1 teaching API: create spending categories, add amounts, and list totals. ' +
-        'Data is shared by all callers of one running process and resets on restart. ' +
+      'PostgreSQL-backed teaching API: create spending categories, add amounts, and list totals. ' +
+        'Data persists across restarts and is shared by application instances using the same database. ' +
         'Amounts use one implicit currency with two decimal places.',
     )
     .setVersion('0.1.0')
