@@ -54,3 +54,8 @@ pnpm-lock.yaml
 /.history
 
 /dist
+
+# local database configuration
+.env
+.env.*
+!.env.example

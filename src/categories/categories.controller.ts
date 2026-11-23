@@ -47,7 +47,7 @@ export class CategoriesController {
     description: 'A category with this name already exists.',
     type: ErrorResponseDto,
   })
-  create(@Body() dto: CreateCategoryDto): CategoryResponseDto {
+  create(@Body() dto: CreateCategoryDto): Promise<CategoryResponseDto> {
     return this.categoriesService.create(dto);
   }
 
@@ -81,7 +81,7 @@ export class CategoriesController {
   addAmount(
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
     @Body() dto: AddAmountDto,
-  ): CategoryResponseDto {
+  ): Promise<CategoryResponseDto> {
     return this.categoriesService.addAmount(id, dto);
   }
 
@@ -89,14 +89,14 @@ export class CategoriesController {
   @ApiOperation({
     summary: 'List categories and their spending totals',
     description:
-      'Returns categories in creation order, including categories with zero spending. Returns an empty array initially.',
+      'Returns categories in creation order, including categories with zero spending. Returns an empty array when no categories exist.',
   })
   @ApiOkResponse({
     description: 'All categories and their current totals.',
     type: CategoryResponseDto,
     isArray: true,
   })
-  findAll(): CategoryResponseDto[] {
+  findAll(): Promise<CategoryResponseDto[]> {
     return this.categoriesService.findAll();
   }
 }
